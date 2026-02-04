@@ -1,0 +1,17 @@
+# Visual Studio 暫存與編譯檔案
+.vs/
+x64/
+Debug/
+Release/
+*.obj
+*.pdb
+*.log
+*.tlog
+*.lastbuildstate
+*.idb
+*.exe
+
+# TensorRT 引擎與模型檔案 (因為硬體特化且檔案大，建議不傳)
+*.engine
+*.onnx
+*.pt
