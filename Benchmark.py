@@ -6,10 +6,10 @@ from ultralytics import YOLO
 
 # ===== 設定 =====
 MODEL_PATH = "yolo26n.pt"
-IMAGE_PATH = "test.jpg"      # 任一固定圖片
+IMAGE_PATH = "test.jpg"
 IMG_SIZE = 640
 WARMUP = 20
-RUNS = 100
+RUNS = 1000 
 
 assert torch.cuda.is_available()
 device = "cuda"
@@ -21,35 +21,36 @@ model.model.eval()
 
 # ===== 固定影像 =====
 img = cv2.imread(IMAGE_PATH)
-assert img is not None
-img = cv2.resize(img, (IMG_SIZE, IMG_SIZE))
+img_resized = cv2.resize(img, (IMG_SIZE, IMG_SIZE))
 
 # ===== 關閉梯度 =====
 torch.set_grad_enabled(False)
 
 # ===== Warm-up =====
 for _ in range(WARMUP):
-    model(img, verbose=False)
-
+    model(img_resized, verbose=False, device=device)
 torch.cuda.synchronize()
 
 # ===== 正式測試 =====
 latencies = []
-
-for _ in range(RUNS):
+for i in range(RUNS):
     t0 = time.perf_counter()
-    model(img, verbose=False)
+    model(img_resized, verbose=False, device=device)
     torch.cuda.synchronize()
     t1 = time.perf_counter()
     latencies.append((t1 - t0) * 1000)
 
 latencies = np.array(latencies)
+mean_latency = latencies.mean()
+p95_latency = np.percentile(latencies, 95)
+fps = 1000.0 / mean_latency
 
-# ===== 統計 =====
-print("=== Python End-to-End Latency (Ultralytics) ===")
-print(f"Mean    : {latencies.mean():.2f} ms")
-print(f"Median  : {np.median(latencies):.2f} ms")
-print(f"P90     : {np.percentile(latencies, 90):.2f} ms")
-print(f"P95     : {np.percentile(latencies, 95):.2f} ms")
-print(f"P99     : {np.percentile(latencies, 99):.2f} ms")
-print(f"Min/Max : {latencies.min():.2f} / {latencies.max():.2f} ms")
+# ===== 格式對齊輸出 =====
+print("\n========================================")
+print("Python Ultralytics 效能報告 (End-to-End)")
+print("----------------------------------------")
+print(f"Mean Latency   : {mean_latency:.5f} ms")
+print(f"P95 Latency    : {p95_latency:.4f} ms")
+print(f"Min / Max      : {latencies.min():.4f} / {latencies.max():.4f} ms")
+print(f"FPS (Average)  : {fps:.2f}")
+print("========================================")
