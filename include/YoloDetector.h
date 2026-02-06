@@ -7,6 +7,7 @@
 #include <NvInfer.h>
 #include <cuda_runtime_api.h>
 #include <opencv2/opencv.hpp>
+#include <opencv2/core/cuda.hpp> // 💡 新增：支援 GPU 矩陣操作
 
 // TensorRT 日誌紀錄器
 class Logger : public nvinfer1::ILogger {
@@ -19,10 +20,10 @@ class Logger : public nvinfer1::ILogger {
 
 // 偵測結果結構
 struct Detection {
-    int classId;      // 類別 ID
-    float confidence; // 信心度 (0.0 ~ 1.0)
-    cv::Rect box;     // 框框位置 (x, y, w, h)
-    cv::Scalar color; // 顯示用的顏色
+    int classId;
+    float confidence;
+    cv::Rect box;
+    cv::Scalar color;
 };
 
 class YoloDetector {
@@ -34,16 +35,18 @@ public:
     bool init();
 
     /**
-     * [重大修改] 核心偵測介面
+     * [GPU 優化版] 核心偵測介面
      * @param img 輸入的 OpenCV 矩陣 (BGR 格式)
      * @return 偵測到的物體清單
-     * 說明：此函式現在只負責運算，不包含顯示與存檔。
      */
     std::vector<Detection> detect(const cv::Mat& img);
 
 private:
-    // 內部預處理：縮放、正規化、HWC -> CHW
-    std::vector<float> preprocess(const cv::Mat& img);
+    /**
+     * 💡 [重大修改] 內部 GPU 預處理
+     * 直接將處理後的資料寫入 mInputBuffer，不再透過 CPU 中轉，節省大量記憶體拷貝時間。
+     */
+    void preprocessGPU(const cv::Mat& img);
 
     // 後處理：將 Tensor 轉回 Detection 結構
     std::vector<Detection> postprocess(const std::vector<float>& output, const cv::Size& originalSize);
@@ -56,7 +59,7 @@ private:
     nvinfer1::ICudaEngine* mEngine = nullptr;
     nvinfer1::IExecutionContext* mContext = nullptr;
 
-    // GPU 記憶體指標
+    // GPU 記憶體指標 (顯存位址)
     void* mInputBuffer = nullptr;
     void* mOutputBuffer = nullptr;
 
@@ -67,7 +70,7 @@ private:
     size_t mInputSize;
     size_t mOutputSize;
 
-    // 模型預設輸入尺寸
+    // 模型預設輸入尺寸 (YOLO26n 標準)
     const int mInputW = 640;
     const int mInputH = 640;
 };
