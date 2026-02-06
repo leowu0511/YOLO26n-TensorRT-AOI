@@ -7,7 +7,8 @@
 #include <NvInfer.h>
 #include <cuda_runtime_api.h>
 #include <opencv2/opencv.hpp>
-#include <opencv2/core/cuda.hpp> // 💡 新增：支援 GPU 矩陣操作
+#include <opencv2/core/cuda.hpp>
+#include <opencv2/core/cuda_stream_accessor.hpp>
 
 // TensorRT 日誌紀錄器
 class Logger : public nvinfer1::ILogger {
@@ -31,25 +32,13 @@ public:
     YoloDetector(const std::string& enginePath);
     ~YoloDetector();
 
-    // 初始化：載入引擎與分配顯存
     bool init();
-
-    /**
-     * [GPU 優化版] 核心偵測介面
-     * @param img 輸入的 OpenCV 矩陣 (BGR 格式)
-     * @return 偵測到的物體清單
-     */
     std::vector<Detection> detect(const cv::Mat& img);
 
 private:
-    /**
-     * 💡 [重大修改] 內部 GPU 預處理
-     * 直接將處理後的資料寫入 mInputBuffer，不再透過 CPU 中轉，節省大量記憶體拷貝時間。
-     */
     void preprocessGPU(const cv::Mat& img);
-
-    // 後處理：將 Tensor 轉回 Detection 結構
-    std::vector<Detection> postprocess(const std::vector<float>& output, const cv::Size& originalSize);
+    // 優化：直接傳入 float 指標，減少一次 memcpy
+    std::vector<Detection> postprocess(const float* data, const cv::Size& originalSize);
 
     std::string mEnginePath;
     Logger mLogger;
@@ -59,18 +48,39 @@ private:
     nvinfer1::ICudaEngine* mEngine = nullptr;
     nvinfer1::IExecutionContext* mContext = nullptr;
 
-    // GPU 記憶體指標 (顯存位址)
+    // GPU 記憶體指標
     void* mInputBuffer = nullptr;
     void* mOutputBuffer = nullptr;
 
     // CUDA 串流
     cudaStream_t mStream = nullptr;
+    cv::cuda::Stream mCvStream; // OpenCV CUDA Stream 包裝器
 
     // 緩衝區大小
     size_t mInputSize;
     size_t mOutputSize;
 
-    // 模型預設輸入尺寸 (YOLO26n 標準)
+    // 模型輸入尺寸
     const int mInputW = 640;
     const int mInputH = 640;
+
+    // ========== 🚀 終極優化：預分配空間 ==========
+
+    // [1] GPU 預處理中間變數 (避免每次重新 malloc 顯存)
+    cv::cuda::GpuMat m_d_img;
+    cv::cuda::GpuMat m_d_resized;
+    cv::cuda::GpuMat m_d_rgb;
+    cv::cuda::GpuMat m_d_float;
+    std::vector<cv::cuda::GpuMat> m_chw_channels;
+
+    // [2] Host 端緩衝
+    std::vector<float> mOutputHostBuffer; // 一般記憶體備援
+    float* mPinnedOutputBuffer = nullptr; // Pinned Memory (加速 PCIe)
+    bool mUsePinnedMemory = true;
+
+    // [3] NMS 中間變數快取 (避免 NMS 時反覆分配 vector)
+    std::vector<int> mClassIds;
+    std::vector<float> mConfidences;
+    std::vector<cv::Rect> mBoxes;
+    std::vector<int> mNmsIndices;
 };
