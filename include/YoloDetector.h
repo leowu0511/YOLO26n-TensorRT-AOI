@@ -16,7 +16,13 @@ class Logger : public nvinfer1::ILogger {
         }
     }
 };
-
+// [新增] 1. 定義偵測結果結構
+struct Detection {
+    int classId;      // 類別 ID (0:人, 1:腳踏車...)
+    float confidence; // 信心度 (0.0 ~ 1.0)
+    cv::Rect box;     // 框框位置 (x, y, w, h)
+    cv::Scalar color; // (選做) 每個類別給不同顏色
+};
 class YoloDetector {
 public:
     YoloDetector(const std::string& enginePath);
@@ -31,6 +37,9 @@ public:
 private:
     // [階段 6] 內部預處理：縮放、正規化、HWC -> CHW
     std::vector<float> preprocess(const cv::Mat& img);
+    
+    // [新增] 2. 後處理函式宣告
+    std::vector<Detection> postprocess(const std::vector<float>& output, const cv::Size& originalSize);
 
     std::string mEnginePath;
     Logger mLogger;
