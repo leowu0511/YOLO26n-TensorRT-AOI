@@ -3,21 +3,21 @@
 YoloDetector::YoloDetector(const std::string& enginePath) : mEnginePath(enginePath) {}
 
 YoloDetector::~YoloDetector() {
-    // ÄÀ©ñ GPU Åã¦s
+    // é‡‹æ”¾ GPU é¡¯å­˜
     if (mInputBuffer) cudaFree(mInputBuffer);
     if (mOutputBuffer) cudaFree(mOutputBuffer);
 
-    // TensorRT 10.x ¨Ï¥Î¼Ğ·Ç delete ÄÀ©ñª«¥ó
+    // TensorRT 10.x ä½¿ç”¨æ¨™æº– delete é‡‹æ”¾ç‰©ä»¶
     if (mContext) delete mContext;
     if (mEngine) delete mEngine;
     if (mRuntime) delete mRuntime;
 }
 
 bool YoloDetector::init() {
-    // step4
+    // --- [éšæ®µ 4] è¼‰å…¥å¼•æ“ ---
     std::ifstream file(mEnginePath, std::ios::binary);
     if (!file.good()) {
-        std::cerr << "§ä¤£¨ì¤ŞÀºÀÉ®× " << mEnginePath << std::endl;
+        std::cerr << "éŒ¯èª¤ï¼šæ‰¾ä¸åˆ°å¼•æ“æª”æ¡ˆ " << mEnginePath << std::endl;
         return false;
     }
 
@@ -37,24 +37,82 @@ bool YoloDetector::init() {
     mContext = mEngine->createExecutionContext();
     if (!mContext) return false;
 
-    // step 5 GPU °O¾ĞÅé¤À°t ---
-    // ¨ú±o¿é¤J¿é¥X Tensor ¦WºÙ
+    // --- [éšæ®µ 5] GPU è¨˜æ†¶é«”åˆ†é… ---
     const char* inputName = mEngine->getIOTensorName(0);
     const char* outputName = mEngine->getIOTensorName(1);
 
-    // ­pºâ YOLO26n ©Ò»İªÅ¶¡ (1x3x640x640 & 1x84x8400)
+    // è¨ˆç®— YOLO26n æ‰€éœ€ç©ºé–“
     mInputSize = 1 * 3 * 640 * 640 * sizeof(float);
     mOutputSize = 1 * 84 * 8400 * sizeof(float);
 
-    // ¤À°tÅã¦s
     if (cudaMalloc(&mInputBuffer, mInputSize) != cudaSuccess) return false;
     if (cudaMalloc(&mOutputBuffer, mOutputSize) != cudaSuccess) return false;
 
-    // «Ø¥ß Tensor ¦a§}³sµ² (¸j©w GPU ¦a§}»P¼Ò«¬ªº Port)
     mContext->setTensorAddress(inputName, mInputBuffer);
     mContext->setTensorAddress(outputName, mOutputBuffer);
 
-    std::cout << ">>> YoloDetector ªì©l¤Æ¦¨¥\" << std::endl;
-    std::cout << ">>> µwÅé¤w¤À°t¡GRTX 4060 GPU Memory" << std::endl;
+    std::cout << ">>> YoloDetector åˆå§‹åŒ–æˆåŠŸ" << std::endl;
+    std::cout << ">>> ç¡¬é«”å·²åˆ†é…ï¼šRTX 4060 GPU Memory" << std::endl;
     return true;
+}
+
+// --- [éšæ®µ 6] é è™•ç†å¯¦ä½œ ---
+std::vector<float> YoloDetector::preprocess(const cv::Mat& img) {
+    int w = img.cols;
+    int h = img.rows;
+
+    // 1. Letterbox ç¸®æ”¾è¨ˆç®—
+    float scale = std::min((float)mInputW / w, (float)mInputH / h);
+    int newW = (int)(w * scale);
+    int newH = (int)(h * scale);
+
+    cv::Mat resized;
+    cv::resize(img, resized, cv::Size(newW, newH));
+
+    // æº–å‚™ç°è‰²ç•«å¸ƒ
+    cv::Mat canvas(mInputH, mInputW, CV_8UC3, cv::Scalar(114, 114, 114));
+
+    // è²¼åœ–
+    int xOffset = (mInputW - newW) / 2;
+    int yOffset = (mInputH - newH) / 2;
+    resized.copyTo(canvas(cv::Rect(xOffset, yOffset, newW, newH)));
+
+    // 2. è½‰æ›ç‚º TensorRT éœ€è¦çš„æ ¼å¼ (HWC -> CHW, BGR -> RGB, 0~255 -> 0~1)
+    std::vector<float> data(mInputSize / sizeof(float));
+
+    for (int r = 0; r < mInputH; ++r) {
+        for (int c = 0; c < mInputW; ++c) {
+            cv::Vec3b pixel = canvas.at<cv::Vec3b>(r, c);
+
+            // æ³¨æ„é€™è£¡çš„é †åºï¼šRGB
+            data[0 * mInputH * mInputW + r * mInputW + c] = pixel[2] / 255.0f; // R
+            data[1 * mInputH * mInputW + r * mInputW + c] = pixel[1] / 255.0f; // G
+            data[2 * mInputH * mInputW + r * mInputW + c] = pixel[0] / 255.0f; // B
+        }
+    }
+    return data;
+}
+
+void YoloDetector::detect(const std::string& imagePath) {
+    // 1. è®€å–åœ–ç‰‡
+    cv::Mat img = cv::imread(imagePath);
+    if (img.empty()) {
+        std::cerr << "éŒ¯èª¤ï¼šç„¡æ³•è®€å–åœ–ç‰‡ " << imagePath << std::endl;
+        return;
+    }
+    std::cout << "1. è®€åœ–æˆåŠŸ: " << img.cols << "x" << img.rows << std::endl;
+
+    // 2. é è™•ç†
+    std::vector<float> inputData = preprocess(img);
+    std::cout << "2. é è™•ç†å®Œæˆ (Letterbox + æ­£è¦åŒ–)" << std::endl;
+
+    // 3. æ¬é‹åˆ° GPU (Host -> Device)
+    cudaError_t status = cudaMemcpy(mInputBuffer, inputData.data(), mInputSize, cudaMemcpyHostToDevice);
+
+    if (status != cudaSuccess) {
+        std::cerr << "CUDA Memcpy éŒ¯èª¤: " << cudaGetErrorString(status) << std::endl;
+        return;
+    }
+
+    std::cout << "3. è³‡æ–™å·²ä¸Šå‚³è‡³ GPU (Ready for Inference)" << std::endl;
 }
