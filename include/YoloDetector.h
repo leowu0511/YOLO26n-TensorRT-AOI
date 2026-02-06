@@ -3,10 +3,12 @@
 #include <vector>
 #include <string>
 #include <fstream>
+#include <algorithm> // 為了 std::min
 #include <NvInfer.h>
 #include <cuda_runtime_api.h>
+#include <opencv2/opencv.hpp> // OpenCV 支援
 
-// TensorRT 日誌紀錄器->報錯
+// TensorRT 日誌紀錄器
 class Logger : public nvinfer1::ILogger {
     void log(Severity severity, const char* msg) noexcept override {
         if (severity <= Severity::kINFO) {
@@ -20,23 +22,33 @@ public:
     YoloDetector(const std::string& enginePath);
     ~YoloDetector();
 
-    // 整合 4 & 5
+    // 整合階段 4 & 5
     bool init();
 
+    // [階段 6] 外部呼叫的偵測介面
+    void detect(const std::string& imagePath);
+
 private:
+    // [階段 6] 內部預處理：縮放、正規化、HWC -> CHW
+    std::vector<float> preprocess(const cv::Mat& img);
+
     std::string mEnginePath;
     Logger mLogger;
 
-    // TensorRT 核心指標 (10.x 用 delete 釋放)
+    // TensorRT 核心指標
     nvinfer1::IRuntime* mRuntime = nullptr;
     nvinfer1::ICudaEngine* mEngine = nullptr;
     nvinfer1::IExecutionContext* mContext = nullptr;
 
-    // GPU 記憶體指標 (Step 5 核心)
+    // GPU 記憶體指標
     void* mInputBuffer = nullptr;
     void* mOutputBuffer = nullptr;
 
     // 緩衝區大小
     size_t mInputSize;
     size_t mOutputSize;
+
+    // 模型輸入尺寸 (YOLO26n 預設)
+    const int mInputW = 640;
+    const int mInputH = 640;
 };
