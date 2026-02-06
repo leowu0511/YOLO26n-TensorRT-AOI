@@ -44,6 +44,9 @@ private:
     void* mInputBuffer = nullptr;
     void* mOutputBuffer = nullptr;
 
+    // CUDA 串流：GPU 的任務排隊通道
+    cudaStream_t mStream = nullptr;
+
     // 緩衝區大小
     size_t mInputSize;
     size_t mOutputSize;
