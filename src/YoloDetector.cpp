@@ -6,6 +6,9 @@ YoloDetector::~YoloDetector() {
     // 釋放 GPU 顯存
     if (mInputBuffer) cudaFree(mInputBuffer);
     if (mOutputBuffer) cudaFree(mOutputBuffer);
+    
+    // [新增] 銷毀 Stream
+    if (mStream) cudaStreamDestroy(mStream);
 
     // TensorRT 10.x 使用標準 delete 釋放物件
     if (mContext) delete mContext;
@@ -37,6 +40,11 @@ bool YoloDetector::init() {
     mContext = mEngine->createExecutionContext();
     if (!mContext) return false;
 
+    // [新增] 建立 CUDA Stream
+    if (cudaStreamCreate(&mStream) != cudaSuccess) {
+        std::cerr << "CUDA Stream 建立失敗" << std::endl;
+        return false;
+    }
     // --- [階段 5] GPU 記憶體分配 ---
     const char* inputName = mEngine->getIOTensorName(0);
     const char* outputName = mEngine->getIOTensorName(1);
@@ -104,15 +112,36 @@ void YoloDetector::detect(const std::string& imagePath) {
 
     // 2. 預處理
     std::vector<float> inputData = preprocess(img);
-    std::cout << "2. 預處理完成 (Letterbox + 正規化)" << std::endl;
+    std::cout << "2. 預處理完成" << std::endl;
 
-    // 3. 搬運到 GPU (Host -> Device)
-    cudaError_t status = cudaMemcpy(mInputBuffer, inputData.data(), mInputSize, cudaMemcpyHostToDevice);
+    // 3. 上傳資料 (Host -> Device) [使用非同步 + Stream]
+    cudaMemcpyAsync(mInputBuffer, inputData.data(), mInputSize, cudaMemcpyHostToDevice, mStream);
 
-    if (status != cudaSuccess) {
-        std::cerr << "CUDA Memcpy 錯誤: " << cudaGetErrorString(status) << std::endl;
+    // 4. [新增] 執行推論 (Inference)
+    // 這行指令就是讓 RTX 4060 開始運算的關鍵！
+    bool status = mContext->enqueueV3(mStream);
+    if (!status) {
+        std::cerr << "推論執行失敗！" << std::endl;
         return;
     }
 
-    std::cout << "3. 資料已上傳至 GPU (Ready for Inference)" << std::endl;
+    // 5. [新增] 取回結果 (Device -> Host)
+    // 準備一個 CPU 陣列來接結果
+    std::vector<float> outputData(mOutputSize / sizeof(float));
+
+    // 把 GPU 算好的結果搬回來
+    cudaMemcpyAsync(outputData.data(), mOutputBuffer, mOutputSize, cudaMemcpyDeviceToHost, mStream);
+
+    // 6. [新增] 等待 GPU 打卡下班
+    // 因為上面都是 Async，這裡要強制等待所有任務完成
+    cudaStreamSynchronize(mStream);
+
+    std::cout << "3. 推論完成 (Inference Done)" << std::endl;
+
+    // --- 驗證一下有沒有拿到數據 ---
+    std::cout << ">>> 輸出 Tensor 前 10 個值: ";
+    for (int i = 0; i < 10; ++i) {
+        std::cout << outputData[i] << " ";
+    }
+    std::cout << "\n>>> 總資料量: " << outputData.size() << std::endl;
 }
