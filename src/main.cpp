@@ -1,6 +1,6 @@
 #include "YoloDetector.h"
 #include <opencv2/opencv.hpp>
-#include <opencv2/core/cuda.hpp> 
+#include <opencv2/core/cuda.hpp>
 #include <chrono>
 #include <numeric>
 #include <algorithm>
@@ -9,140 +9,132 @@
 #include <string>
 
 /**
- * [輔助函式] 繪製偵測結果 (DeepPCB 類別對應)
+ * [輔助函式] 在影像上繪製偵測結果 (PCB 六大瑕疵類別)
  */
 void drawResults(cv::Mat& img, const std::vector<Detection>& results) {
-    const std::vector<std::string> classNames = {
-        "open", "short", "mousebite", "spur", "copper", "pin-hole"
-    };
-
+    const std::vector<std::string> classNames = { "open", "short", "mousebite", "spur", "copper", "pin-hole" };
     const std::vector<cv::Scalar> colors = {
-        cv::Scalar(0, 0, 255),   // open: 紅色
-        cv::Scalar(0, 255, 255), // short: 黃色
-        cv::Scalar(255, 0, 0),   // mousebite: 藍色
-        cv::Scalar(0, 255, 0),   // spur: 綠色
-        cv::Scalar(255, 0, 255), // copper: 紫色
-        cv::Scalar(255, 165, 0)  // pin-hole: 橘色
+        cv::Scalar(0,0,255), cv::Scalar(0,255,255), cv::Scalar(255,0,0),
+        cv::Scalar(0,255,0), cv::Scalar(255,0,255), cv::Scalar(255,165,0)
     };
 
     for (const auto& det : results) {
-        cv::Scalar color = (det.classId < colors.size()) ? colors[det.classId] : cv::Scalar(255, 255, 255);
+        if (det.classId < 0 || det.classId >= classNames.size()) continue;
+        cv::Scalar color = colors[det.classId];
         cv::rectangle(img, det.box, color, 3);
 
-        std::string classString = (det.classId < classNames.size()) ? classNames[det.classId] : "Unknown";
-        std::string label = classString + " " + std::to_string((int)(det.confidence * 100)) + "%";
-
-        int baseLine;
-        cv::Size labelSize = cv::getTextSize(label, cv::FONT_HERSHEY_SIMPLEX, 0.6, 2, &baseLine);
-        int labelX = std::max(det.box.x, 0);
-        int labelY = std::max(labelSize.height, det.box.y - 10);
-
-        cv::rectangle(img, cv::Point(labelX, labelY - labelSize.height),
-            cv::Point(labelX + labelSize.width, labelY + baseLine),
-            color, cv::FILLED);
-
-        cv::putText(img, label, cv::Point(labelX, labelY),
-            cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(255, 255, 255), 2);
-
-        std::cout << "   -> [偵測到瑕疵] " << label << " 座標: " << det.box << std::endl;
+        // 建立標籤文字與背景
+        std::string label = classNames[det.classId] + " " + std::to_string((int)(det.confidence * 100)) + "%";
+        cv::putText(img, label, cv::Point(det.box.x, std::max(20, det.box.y - 10)),
+            cv::FONT_HERSHEY_SIMPLEX, 0.6, color, 2);
     }
 }
 
 int main() {
-    // ==========================================
-    // 0. 硬體環境驗證 (確認 OpenCV 4.13.0 + CUDA 是否生效)
-    // ==========================================
-    std::cout << ">>> [硬體檢查] 正在初始化 MSI RTX 4060 環境..." << std::endl;
-    int cuda_count = cv::cuda::getCudaEnabledDeviceCount();
-    if (cuda_count < 1) {
-        std::cerr << "!!! 錯誤：找不到支援 CUDA 的 GPU，請檢查 OpenCV 連結是否正確。" << std::endl;
-        system("pause");
+    std::cout << "[System] Initializing AOI Inference Engine (Target: RTX 4060)..." << std::endl;
+
+    // 硬體檢查
+    if (cv::cuda::getCudaEnabledDeviceCount() < 1) {
+        std::cerr << "[Error] No CUDA-capable device detected." << std::endl;
         return -1;
     }
-    cv::cuda::printShortCudaDeviceInfo(cv::cuda::getDevice());
 
-    // ==========================================
-    // 1. 設定相對路徑 (指向上一層資料夾 ../)
-    // ==========================================
+    // 路徑配置
     std::string enginePath = "../pcb_aoi.engine";
-    std::string testImagePath = "../test.jpg";
+    std::string testSetPath = "../Test_Set_Raw/images/";
 
-    // ==========================================
-    // 2. 初始化 TensorRT 引擎
-    // ==========================================
+    // 初始化推論引擎
     YoloDetector detector(enginePath);
     if (!detector.init()) {
-        std::cerr << ">>> 引擎初始化失敗！請確認檔案是否在上一層目錄：" << enginePath << std::endl;
-        system("pause");
-        return -1;
+        std::cerr << "[Error] Failed to initialize inference engine." << std::endl;
+        system("pause"); return -1;
     }
 
-    // ==========================================
-    // 3. 讀取測試圖片
-    // ==========================================
-    cv::Mat img = cv::imread(testImagePath);
-    if (img.empty()) {
-        std::cerr << ">>> 無法讀取圖片，請確認檔案是否在上一層目錄：" << testImagePath << std::endl;
-        system("pause");
-        return -1;
+    // 掃描測試資料集
+    std::vector<std::string> imagePaths;
+    cv::glob(testSetPath + "*.jpg", imagePaths);
+    if (imagePaths.empty()) {
+        std::cerr << "[Error] Test dataset not found at: " << testSetPath << std::endl;
+        system("pause"); return -1;
     }
 
-    // ==========================================
-    // 4. [模式一] 視覺化測試
-    // ==========================================
-    std::cout << "\n>>> 啟動模式一：視覺化驗證..." << std::endl;
-    cv::Mat visualImg = img.clone();
-    auto results = detector.detect(visualImg);
+    // 影像預載入程序 (同時載入至系統記憶體 RAM 與顯示卡顯存 VRAM)
+    std::vector<cv::Mat> preloadedCpuImages;
+    std::vector<cv::cuda::GpuMat> preloadedGpuImages;
 
-    std::cout << ">>> 偵測到 " << results.size() << " 個瑕疵。" << std::endl;
-    drawResults(visualImg, results);
+    size_t loadCount = std::min((size_t)100, imagePaths.size());
+    std::cout << "[Storage] Pre-loading " << loadCount << " samples to RAM/VRAM..." << std::endl;
 
-    cv::Mat displayImg;
-    double displayScale = (visualImg.cols > 1280) ? 0.5 : 1.0;
-    cv::resize(visualImg, displayImg, cv::Size(), displayScale, displayScale);
+    for (size_t i = 0; i < loadCount; ++i) {
+        cv::Mat m = cv::imread(imagePaths[i]);
+        if (!m.empty()) {
+            preloadedCpuImages.push_back(m);
+            cv::cuda::GpuMat d_m;
+            d_m.upload(m); // 預先上傳至 GPU 供零拷貝模式測試
+            preloadedGpuImages.push_back(d_m);
+        }
+    }
 
-    cv::imshow("AOI - YOLO26 RTX 4060", displayImg);
-    cv::imwrite("../pcb_defect_result.jpg", visualImg); // 結果也存到上一層
-    std::cout << ">>> 按任意鍵開始 1000 次效能跑分..." << std::endl;
-    cv::waitKey(0);
-
-    // ==========================================
-    // 5. [模式二] 效能跑分測試
-    // ==========================================
-    std::cout << "\n>>> 啟動模式二：1000 次 End-to-End 效能跑分..." << std::endl;
-
-    for (int i = 0; i < 50; i++) detector.detect(img);
-
-    std::vector<double> latencies;
-    latencies.reserve(1000);
+    // 模式一：實戰模式 (Production Mode)
+    // 流程：包含資料從 CPU 傳輸至 GPU 的完整耗時，對應真實產線情境
+    std::cout << "\n[Mode] Launching Production Mode (Host-to-Device transfer included)..." << std::endl;
+    std::vector<double> prodLatencies;
+    prodLatencies.reserve(1000);
 
     for (int i = 0; i < 1000; ++i) {
+        const cv::Mat& frame = preloadedCpuImages[i % preloadedCpuImages.size()];
         auto start = std::chrono::high_resolution_clock::now();
-        detector.detect(img);
-        cv::cuda::Stream::Null().waitForCompletion();
-        auto end = std::chrono::high_resolution_clock::now();
-        double ms = std::chrono::duration<double, std::milli>(end - start).count();
-        latencies.push_back(ms);
 
-        if ((i + 1) % 100 == 0) std::cout << "已完成 " << (i + 1) << " 次推論..." << std::endl;
+        detector.detect(frame);
+
+        auto end = std::chrono::high_resolution_clock::now();
+        prodLatencies.push_back(std::chrono::duration<double, std::milli>(end - start).count());
     }
 
-    double avg = std::accumulate(latencies.begin(), latencies.end(), 0.0) / latencies.size();
-    std::sort(latencies.begin(), latencies.end());
-    double minVal = latencies.front();
-    double maxVal = latencies.back();
-    double p95 = latencies[950];
+    // 模式二：零拷貝模式 (Zero-Copy Mode)
+    // 流程：影像已存在於顯存，純粹測試 GPU 預處理與模型推論的算力極限
+    std::cout << "[Mode] Launching Zero-Copy Mode (On-Device Inference)..." << std::endl;
+    std::vector<double> turboLatencies;
+    turboLatencies.reserve(1000);
 
+    for (int i = 0; i < 1000; ++i) {
+        const cv::cuda::GpuMat& d_frame = preloadedGpuImages[i % preloadedGpuImages.size()];
+        auto start = std::chrono::high_resolution_clock::now();
+
+        detector.detectGpu(d_frame);
+
+        auto end = std::chrono::high_resolution_clock::now();
+        turboLatencies.push_back(std::chrono::duration<double, std::milli>(end - start).count());
+    }
+
+    // 效能數據統計彙整
+    auto getStats = [](std::vector<double>& v) {
+        double avg = std::accumulate(v.begin(), v.end(), 0.0) / v.size();
+        std::sort(v.begin(), v.end());
+        return std::make_pair(avg, v[950]); // 返回平均值與 P95
+        };
+
+    auto prodStats = getStats(prodLatencies);
+    auto turboStats = getStats(turboLatencies);
+
+    // 輸出最終效能報告
     std::cout << "\n========================================" << std::endl;
-    std::cout << "AOI 效能報告 (RTX 4060 + CV 4.13.0)" << std::endl;
+    std::cout << "  AOI ENGINE PERFORMANCE REPORT" << std::endl;
     std::cout << "----------------------------------------" << std::endl;
-    std::cout << "平均延遲 (Mean) : " << avg << " ms" << std::endl;
-    std::cout << "95% 延遲 (P95)  : " << p95 << " ms" << std::endl;
-    std::cout << "極速 (Min)      : " << minVal << " ms" << std::endl;
-    std::cout << "每秒幀數 (FPS)  : " << 1000.0 / avg << std::endl;
+    std::cout << "[Production] Mean: " << prodStats.first << " ms | FPS: " << 1000.0 / prodStats.first << std::endl;
+    std::cout << "[Production] P95:  " << prodStats.second << " ms" << std::endl;
+    std::cout << "----------------------------------------" << std::endl;
+    std::cout << "[Zero-Copy]  Mean: " << turboStats.first << " ms | FPS: " << 1000.0 / turboStats.first << std::endl;
+    std::cout << "[Zero-Copy]  P95:  " << turboStats.second << " ms" << std::endl;
     std::cout << "========================================" << std::endl;
 
-    std::cout << "\n按任意鍵退出..." << std::endl;
+    // 視覺化驗證結果輸出
+    cv::Mat resImg = preloadedCpuImages[0].clone();
+    auto dets = detector.detect(resImg);
+    drawResults(resImg, dets);
+    cv::imshow("Inference Output Validation", resImg);
+
+    std::cout << "\nBenchmark complete. Results visualized." << std::endl;
     cv::waitKey(0);
     return 0;
 }
